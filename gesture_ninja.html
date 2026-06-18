@@ -1,0 +1,1289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Gesture Ninja</title>
+<style>
+  :root {
+    --bg: #0a0a0d;
+    --panel: #14141a;
+    --blade: #ff3b1f;
+    --blade-glow: #ff7a45;
+    --acid: #c8ff3e;
+    --text: #e8e6e1;
+    --text-dim: #8a877f;
+    --danger: #ff3b1f;
+    --warn: #ffb020;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Courier New', monospace;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+  }
+  #app {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #stage {
+    position: relative;
+    /* Actual pixel size is set in JS (fitStageToViewport) to preserve a
+       4:3 aspect ratio while fitting inside the viewport. Width/height
+       here are just safe initial defaults before JS runs. */
+    width: 960px;
+    height: 720px;
+    max-width: 100vw;
+    max-height: 100vh;
+  }
+  canvas {
+    display: block;
+    border-radius: 4px;
+    width: 100% !important;
+    height: 100% !important;
+  }
+  #camFeed {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* ---------- HUD ---------- */
+  #hud {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    display: flex;
+    justify-content: space-between;
+    padding: 18px 24px;
+    pointer-events: none;
+    z-index: 10;
+    font-size: 14px;
+    letter-spacing: 0.08em;
+  }
+  .hud-block { text-transform: uppercase; }
+  .hud-label { color: var(--text-dim); font-size: 11px; }
+  .hud-value { color: var(--acid); font-size: 26px; font-weight: bold; line-height: 1; }
+  #lives { display: flex; gap: 5px; margin-top: 4px; flex-wrap: wrap; max-width: 160px; justify-content: flex-end; }
+  .life-dot {
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    background: var(--danger);
+    box-shadow: 0 0 6px var(--danger);
+  }
+  .life-dot.lost { background: transparent; border: 1px solid var(--text-dim); box-shadow: none; }
+
+  /* ---------- Manual pause button (real click target, separate from the
+     pointer-events:none HUD block since it needs to receive clicks) ---------- */
+  #pauseBtn {
+    position: absolute;
+    top: 16px; right: 24px;
+    z-index: 12;
+    width: 36px; height: 36px;
+    padding: 0;
+    border-radius: 50%;
+    background: rgba(20,20,26,0.85);
+    border: 1px solid #2a2a32;
+    color: var(--text);
+    font-size: 13px;
+    letter-spacing: 0;
+    text-transform: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  }
+  #pauseBtn:hover { background: rgba(40,40,48,0.9); border-color: #444; transform: translateY(-1px); box-shadow: none; }
+  #pauseBtn:active { transform: translateY(0); }
+  /* Lives display sits in the top-right of #hud already; nudge the pause
+     button to its own row above it so they don't overlap. */
+  #hud .hud-block:last-child { margin-top: 32px; }
+
+  /* ---------- Tracking status pill (top center, always visible, primary signal) ---------- */
+  #trackPill {
+    position: absolute;
+    top: 18px; left: 50%;
+    transform: translateX(-50%);
+    z-index: 11;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 16px;
+    border-radius: 20px;
+    background: rgba(20,20,26,0.85);
+    border: 1px solid #2a2a32;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    transition: border-color 0.25s, background 0.25s;
+    pointer-events: none;
+  }
+  #trackPill .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #555;
+    transition: background 0.2s, box-shadow 0.2s;
+  }
+  #trackPill.tracked { border-color: rgba(200,255,62,0.4); }
+  #trackPill.tracked .dot { background: var(--acid); box-shadow: 0 0 6px var(--acid); }
+  #trackPill.searching { border-color: rgba(255,176,32,0.4); }
+  #trackPill.searching .dot { background: var(--warn); box-shadow: 0 0 6px var(--warn); animation: pulse 1s infinite; }
+  #trackPill.lost { border-color: rgba(255,59,31,0.5); }
+  #trackPill.lost .dot { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+
+  /* ---------- Combo callout ---------- */
+  #comboCallout {
+    position: absolute;
+    top: 38%; left: 50%;
+    transform: translate(-50%,-50%) scale(0.8);
+    z-index: 12;
+    pointer-events: none;
+    font-size: 38px;
+    font-weight: bold;
+    letter-spacing: 0.04em;
+    color: var(--acid);
+    text-shadow: 0 0 18px rgba(200,255,62,0.6);
+    opacity: 0;
+    transition: opacity 0.15s, transform 0.15s;
+  }
+  #comboCallout.show { opacity: 1; transform: translate(-50%,-50%) scale(1); }
+
+  /* ---------- Pause banner (palm gesture) ---------- */
+  #pauseBanner {
+    position: absolute;
+    inset: 0;
+    z-index: 15;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10,10,13,0.78);
+    text-align: center;
+  }
+  #pauseBanner.show { display: flex; }
+  #pauseBanner h2 { font-size: 28px; letter-spacing: 0.05em; margin-bottom: 10px; }
+  #pauseBanner p { color: var(--text-dim); font-size: 13px; max-width: 320px; line-height: 1.6; }
+  #pauseBanner .icon { font-size: 40px; margin-bottom: 14px; }
+  #pauseBanner button { margin-top: 20px; }
+
+  /* ---------- Status line (secondary, bottom left) ---------- */
+  #status {
+    position: absolute;
+    bottom: 16px; left: 24px;
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    z-index: 10;
+    max-width: 260px;
+    line-height: 1.5;
+  }
+
+  /* ---------- Hand preview (bottom right, with skeleton + calibration ring) ---------- */
+  #handPreview {
+    position: absolute;
+    bottom: 16px;
+    right: 16px;
+    width: 140px;
+    height: 105px;
+    border: 1px solid #2a2a32;
+    border-radius: 4px;
+    overflow: hidden;
+    z-index: 10;
+    background: #000;
+  }
+  #handPreview canvas { width: 100%; height: 100%; }
+  #handPreview .frame-label {
+    position: absolute;
+    top: 3px; left: 6px;
+    font-size: 9px;
+    color: rgba(255,255,255,0.5);
+    letter-spacing: 0.05em;
+    z-index: 1;
+  }
+
+  /* ---------- Overlay screens ---------- */
+  #overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10,10,13,0.96);
+    z-index: 20;
+    text-align: center;
+    padding: 32px;
+  }
+  #overlay h1 {
+    font-size: 48px;
+    letter-spacing: 0.02em;
+    margin-bottom: 8px;
+    color: var(--text);
+  }
+  #overlay h1 span { color: var(--blade); }
+  #overlay p {
+    color: var(--text-dim);
+    font-size: 14px;
+    max-width: 440px;
+    line-height: 1.6;
+    margin-bottom: 24px;
+  }
+  button {
+    background: var(--blade);
+    color: #fff;
+    border: none;
+    padding: 14px 32px;
+    font-family: inherit;
+    font-size: 15px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  button:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(255,59,31,0.4); }
+  button:disabled { background: #444; cursor: not-allowed; box-shadow: none; }
+  #permHint {
+    margin-top: 16px;
+    font-size: 12px;
+    color: var(--text-dim);
+    max-width: 360px;
+  }
+
+  /* ---------- Calibration screen ---------- */
+  #calibrateScreen { display: none; }
+  #calibrateScreen.show { display: flex; }
+  #calRing {
+    width: 160px; height: 160px;
+    border-radius: 50%;
+    border: 3px solid #2a2a32;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 22px;
+    position: relative;
+    transition: border-color 0.2s;
+  }
+  #calRing.good { border-color: var(--acid); box-shadow: 0 0 24px rgba(200,255,62,0.35); }
+  #calRing svg { width: 100%; height: 100%; }
+  #calRingFill {
+    transition: stroke-dashoffset 0.1s linear;
+  }
+  #calStatusText { font-size: 13px; color: var(--text-dim); letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 4px; }
+  #calSubText { font-size: 12px; color: #5a5852; }
+
+  .key-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid #2a2a32;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 6px;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <video id="camFeed" autoplay playsinline muted></video>
+
+    <!-- Persistent gameplay HUD -->
+    <div id="hud">
+      <div class="hud-block">
+        <div class="hud-label">Score</div>
+        <div class="hud-value" id="scoreVal">0</div>
+      </div>
+      <div class="hud-block" style="text-align:right">
+        <div class="hud-label">Lives</div>
+        <div id="lives"></div>
+      </div>
+    </div>
+
+    <button id="pauseBtn" aria-label="Pause">❚❚</button>
+
+    <div id="trackPill" class="lost">
+      <div class="dot"></div>
+      <span id="trackPillText">Camera off</span>
+    </div>
+
+    <div id="comboCallout"></div>
+
+    <div id="pauseBanner">
+      <div class="icon">✋</div>
+      <h2 id="pauseBannerTitle">PAUSED</h2>
+      <p id="pauseBannerText">Open palm detected. Make a fist or lower your hand, then hold it up again to resume.</p>
+      <button id="resumeBtn">Resume</button>
+    </div>
+
+    <div id="status"></div>
+
+    <div id="handPreview">
+      <div class="frame-label">TRACKING</div>
+    </div>
+
+    <!-- Start screen -->
+    <div id="overlay">
+      <h1>GESTURE <span>NINJA</span></h1>
+      <p>
+        Slice fruit using your bare hand. No mouse, no touch.
+        Allow camera access, then calibrate so the game can find your hand reliably.
+        Swipe fast through fruit to slice them, chain slices for combo bonus,
+        and avoid bombs. Three missed fruit ends the run. Show an open palm any time to pause.
+      </p>
+      <button id="startBtn">Enable Camera</button>
+      <div id="permHint"></div>
+    </div>
+
+    <!-- Calibration screen -->
+    <div id="calibrateScreen">
+      <div id="calRing">
+        <svg viewBox="0 0 100 100">
+          <circle cx="50" cy="50" r="44" fill="none" stroke="#1d1d24" stroke-width="6"/>
+          <circle id="calRingFill" cx="50" cy="50" r="44" fill="none" stroke="#c8ff3e" stroke-width="6"
+                  stroke-dasharray="276" stroke-dashoffset="276" transform="rotate(-90 50 50)" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div id="calStatusText">Show your hand to the camera</div>
+      <div id="calSubText">Hold it steady inside the frame</div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+/* =========================================================================
+   GESTURE NINJA — v2
+
+   UX additions in this pass, and the reasoning behind each:
+
+   1. PERSISTENT BLADE CURSOR
+      v1 only rendered a fading trail when slicing. That means an idle hand
+      gave zero visual feedback. A camera-controlled pointer is invisible by
+      default (unlike a mouse, where your own hand IS the cursor), so the
+      game must draw a synthetic one, constantly, whether moving or not.
+
+   2. THREE-STATE TRACKING INDICATOR (tracked / searching / lost)
+      Binary on/off status hides the most common failure: brief tracking
+      dropout. "Searching" (no hand for <600ms, likely a blip) is visually
+      distinct from "lost" (no hand for >600ms, likely the user stepped out
+      of frame or lighting failed). This tells the user whether to wait or
+      to act.
+
+   3. CALIBRATION GATE BEFORE PLAY
+      Starting a timed arcade game with unverified tracking guarantees a bad
+      first impression. The calibration screen requires ~1s of continuous,
+      stable hand detection before "Start Playing" is enabled. This catches
+      bad lighting/framing before it costs the user lives.
+
+   4. EXPONENTIAL SMOOTHING ON FINGERTIP POSITION
+      Raw MediaPipe landmarks jitter frame to frame. Smoothing trades a small
+      amount of latency for a stable, readable blade path and removes false
+      "slow swipe" speed readings caused by noise rather than real motion.
+
+   5. OPEN-PALM PAUSE GESTURE
+      There is intentionally no mouse/keyboard fallback in this build, so the
+      user needs a hands-only way to step away (adjust lighting, answer a
+      door) without losing a life to a fruit that fell during the
+      interruption. Detected via finger-extension heuristic on landmarks,
+      not a separate model.
+
+   6. COMBO SYSTEM
+      Binary hit/miss has a low skill ceiling. Multiple slices within a
+      720ms window now chain into combo multipliers with on-screen callouts,
+      giving skilled swiping something to optimize for, which is the actual
+      hook of the genre, not just "don't miss."
+
+   7. SPEED-SCALED SLICE THRESHOLD + LARGER FORGIVENESS RADIUS ON BOMBS
+      Bombs already heavily punish (instant end-run), so their hit radius is
+      tightened slightly relative to fruit to reduce accidental death from
+      tracking noise near a bomb's edge.
+   ========================================================================= */
+
+// ---------- Shared hand/tracking state ----------
+const handState = {
+  active: false,
+  x: 0, y: 0,
+  prevX: 0, prevY: 0,
+  rawX: 0, rawY: 0,
+  speed: 0,
+  palmOpen: false,
+  lastSeenAt: 0
+};
+
+const SMOOTHING = 0.65; // lower = smoother/slower, higher = snappier/jitterier
+// Raised from 0.45: the previous value, combined with a tightened capture
+// region, made fast horizontal swipes feel laggy and effortful. This trades
+// a bit of jitter resistance for responsiveness, which matters more for a
+// swipe-based game than a perfectly smooth idle cursor.
+
+let gameCanvasW = 960;
+let gameCanvasH = 720;
+const ASPECT = gameCanvasW / gameCanvasH;
+
+// Sizes #stage to the largest 4:3 box that fits the current viewport.
+// This is what makes the canvas genuinely responsive: the canvas element's
+// CSS size always matches #stage exactly (see `canvas { width/height: 100% }`),
+// so there is never a mismatch between what's visible and what's interactive.
+function fitStageToViewport() {
+  const stage = document.getElementById('stage');
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  let w = vw;
+  let h = w / ASPECT;
+  if (h > vh) {
+    h = vh;
+    w = h * ASPECT;
+  }
+  stage.style.width = Math.floor(w) + 'px';
+  stage.style.height = Math.floor(h) + 'px';
+}
+window.addEventListener('resize', fitStageToViewport);
+fitStageToViewport();
+
+// ---------- DOM refs ----------
+const overlay = document.getElementById('overlay');
+const calibrateScreen = document.getElementById('calibrateScreen');
+const startBtn = document.getElementById('startBtn');
+const permHint = document.getElementById('permHint');
+const trackPill = document.getElementById('trackPill');
+const trackPillText = document.getElementById('trackPillText');
+const statusEl = document.getElementById('status');
+const camFeed = document.getElementById('camFeed');
+const handPreviewEl = document.getElementById('handPreview');
+const calRing = document.getElementById('calRing');
+const calRingFill = document.getElementById('calRingFill');
+const calStatusText = document.getElementById('calStatusText');
+const calSubText = document.getElementById('calSubText');
+const pauseBanner = document.getElementById('pauseBanner');
+const pauseBannerTitle = document.getElementById('pauseBannerTitle');
+const pauseBannerText = document.getElementById('pauseBannerText');
+const pauseBtn = document.getElementById('pauseBtn');
+const resumeBtn = document.getElementById('resumeBtn');
+const comboCallout = document.getElementById('comboCallout');
+
+let previewCtx = null;
+let previewCanvas = null;
+
+function setupPreviewCanvas() {
+  previewCanvas = document.createElement('canvas');
+  previewCanvas.width = 280;
+  previewCanvas.height = 210;
+  handPreviewEl.appendChild(previewCanvas);
+  previewCtx = previewCanvas.getContext('2d');
+}
+
+function dist(x1,y1,x2,y2) { return Math.hypot(x2-x1, y2-y1); }
+function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+
+// ---------- Tracking pill state machine ----------
+let trackState = 'lost'; // 'tracked' | 'searching' | 'lost'
+function setTrackState(state, label) {
+  if (trackState !== state) {
+    trackState = state;
+    trackPill.className = state;
+  }
+  trackPillText.textContent = label;
+}
+
+function updateTrackingIndicator() {
+  const now = performance.now();
+  const sinceLast = now - handState.lastSeenAt;
+  if (handState.active) {
+    setTrackState('tracked', 'Hand tracked');
+  } else if (sinceLast < 600) {
+    setTrackState('searching', 'Reacquiring...');
+  } else {
+    setTrackState('lost', 'No hand in frame');
+  }
+}
+setInterval(updateTrackingIndicator, 120);
+
+// =============================================================================
+// CALIBRATION
+// =============================================================================
+const CAL_REQUIRED_MS = 1100;
+const CAL_TIMEOUT_MS = 7000; // after this long without success, offer a manual skip
+let calProgressStart = null;
+let calibrationDone = false;
+let calibrationActive = false;
+let calStartedAt = null;
+let calSkipShown = false;
+const CAL_RING_CIRCUMFERENCE = 276;
+
+function startCalibration() {
+  calibrationActive = true;
+  calibrationDone = false;
+  calProgressStart = null;
+  calStartedAt = performance.now();
+  calSkipShown = false;
+  overlay.style.display = 'none';
+  calibrateScreen.classList.add('show');
+  removeCalSkipButton();
+  requestAnimationFrame(calibrationLoop);
+}
+
+function calibrationLoop() {
+  if (!calibrationActive) return;
+
+  const now = performance.now();
+  // Threshold loosened from a strict "barely moving" check: the previous
+  // value was tuned before the coordinate-mapping fix, when small real-world
+  // hand tremor could read as a large pixel jump. Speed is in canvas pixels
+  // per frame at 960x720 logical size.
+  const stable = handState.active && handState.speed < 22;
+
+  if (stable) {
+    if (calProgressStart === null) calProgressStart = now;
+    const elapsed = now - calProgressStart;
+    const frac = Math.min(1, elapsed / CAL_REQUIRED_MS);
+    calRingFill.setAttribute('stroke-dashoffset', CAL_RING_CIRCUMFERENCE * (1 - frac));
+    calRing.classList.toggle('good', frac > 0.05);
+    calStatusText.textContent = frac < 1 ? 'Hold steady...' : 'Locked on';
+    calSubText.textContent = frac < 1 ? 'Keep your hand in frame' : 'Starting...';
+
+    if (frac >= 1 && !calibrationDone) {
+      calibrationDone = true;
+      setTimeout(finishCalibration, 350);
+    }
+  } else {
+    calProgressStart = null;
+    calRingFill.setAttribute('stroke-dashoffset', CAL_RING_CIRCUMFERENCE);
+    calRing.classList.remove('good');
+    calStatusText.textContent = handState.active ? 'Hold your hand steady' : 'Show your hand to the camera';
+    calSubText.textContent = 'It should be visible and not moving too fast';
+  }
+
+  // Never trap the user on this screen. If calibration hasn't succeeded
+  // after CAL_TIMEOUT_MS, surface a manual way forward instead of forcing
+  // a page refresh.
+  if (!calSkipShown && now - calStartedAt > CAL_TIMEOUT_MS) {
+    calSkipShown = true;
+    showCalSkipButton();
+  }
+
+  requestAnimationFrame(calibrationLoop);
+}
+
+function showCalSkipButton() {
+  let btn = document.getElementById('calSkipBtn');
+  if (btn) return;
+  btn = document.createElement('button');
+  btn.id = 'calSkipBtn';
+  btn.textContent = 'Skip calibration and play anyway';
+  btn.style.marginTop = '22px';
+  btn.style.background = '#2a2a32';
+  btn.style.fontSize = '12px';
+  btn.style.padding = '10px 20px';
+  btn.addEventListener('click', () => {
+    calibrationDone = true;
+    finishCalibration();
+  });
+  calStatusText.insertAdjacentElement('afterend', btn);
+  calSubText.textContent = 'Tracking is having trouble locking on. You can still play, the blade cursor will show you where the game sees your hand.';
+}
+
+function removeCalSkipButton() {
+  const btn = document.getElementById('calSkipBtn');
+  if (btn) btn.remove();
+}
+
+function finishCalibration() {
+  calibrationActive = false;
+  calibrateScreen.classList.remove('show');
+  removeCalSkipButton();
+  if (typeof startGame === 'function') startGame();
+}
+
+// =============================================================================
+// MEDIAPIPE HANDS
+// =============================================================================
+let handsModel = null;
+let mpCamera = null;
+
+// Landmark indices for finger-extension based palm-open heuristic
+const FINGER_TIPS = [8, 12, 16, 20];
+const FINGER_PIPS = [6, 10, 14, 18];
+
+async function initHandTracking() {
+  handsModel = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+  });
+  handsModel.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.6,
+    minTrackingConfidence: 0.6
+  });
+  handsModel.onResults(onHandResults);
+
+  mpCamera = new Camera(camFeed, {
+    onFrame: async () => { await handsModel.send({ image: camFeed }); },
+    width: 640,
+    height: 480
+  });
+  await mpCamera.start();
+}
+
+function onHandResults(results) {
+  if (previewCtx) {
+    previewCtx.save();
+    previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    // Mirror the video frame via canvas transform (not CSS) so the skeleton
+    // drawn afterward, in the same transformed space, lines up exactly with
+    // the visible hand instead of drifting due to a separate CSS-level flip.
+    previewCtx.translate(previewCanvas.width, 0);
+    previewCtx.scale(-1, 1);
+    previewCtx.drawImage(results.image, 0, 0, previewCanvas.width, previewCanvas.height);
+    previewCtx.restore();
+  }
+
+  if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+    const lm = results.multiHandLandmarks[0];
+    const tip = lm[8];
+
+    // Flip X: MediaPipe coords are mirrored relative to what user sees in selfie view
+    const nx = 1 - tip.x;
+    const ny = tip.y;
+
+    // Map only the COMFORTABLE region of the camera frame to the full canvas.
+    // Without this, the bottom edge of the game canvas only triggers when
+    // the hand is at the very bottom edge of the camera frame, which is
+    // often below where a webcam can even see a raised hand (most webcams
+    // are mounted above the screen and angled down only slightly). This
+    // remaps a smaller, reachable rectangle of camera space to 0..1 so a
+    // natural range of hand motion covers the entire play area.
+    const X_RANGE = [0.15, 0.85]; // widened from [0.08, 0.92]: less arm travel needed to cross the full canvas width
+    const Y_RANGE = [0.05, 0.80];
+    const mappedX = (nx - X_RANGE[0]) / (X_RANGE[1] - X_RANGE[0]);
+    const mappedY = (ny - Y_RANGE[0]) / (Y_RANGE[1] - Y_RANGE[0]);
+
+    const targetX = clamp01(mappedX) * gameCanvasW;
+    const targetY = clamp01(mappedY) * gameCanvasH;
+
+    handState.prevX = handState.x;
+    handState.prevY = handState.y;
+
+    // Exponential smoothing: blend new raw reading into current position
+    // rather than snapping directly to it. Removes per-frame jitter.
+    if (!handState.active) {
+      // first detection after a gap, snap immediately rather than lerping
+      // from a stale position across the screen
+      handState.x = targetX;
+      handState.y = targetY;
+    } else {
+      handState.x += (targetX - handState.x) * SMOOTHING;
+      handState.y += (targetY - handState.y) * SMOOTHING;
+    }
+
+    handState.speed = dist(handState.x, handState.y, handState.prevX, handState.prevY);
+    handState.palmOpen = isPalmOpen(lm);
+    handState.active = true;
+    handState.lastSeenAt = performance.now();
+
+    if (previewCtx) drawPreviewSkeleton(lm);
+  } else {
+    handState.active = false;
+  }
+}
+
+// Heuristic: a finger is "extended" if its tip is meaningfully farther from
+// the wrist than its PIP joint is. Palm counted open if 3+ of 4 fingers
+// (excluding thumb, which is unreliable for this check) are extended.
+function isPalmOpen(lm) {
+  const wrist = lm[0];
+  let extended = 0;
+  for (let i = 0; i < FINGER_TIPS.length; i++) {
+    const tipD = dist(lm[FINGER_TIPS[i]].x, lm[FINGER_TIPS[i]].y, wrist.x, wrist.y);
+    const pipD = dist(lm[FINGER_PIPS[i]].x, lm[FINGER_PIPS[i]].y, wrist.x, wrist.y);
+    if (tipD > pipD * 1.15) extended++;
+  }
+  return extended >= 3;
+}
+
+function drawPreviewSkeleton(lm) {
+  const w = previewCanvas.width;
+  const h = previewCanvas.height;
+  // Mirror x the same way the video frame was drawn (1 - x), so points
+  // land on the visible hand instead of its un-mirrored mirror position.
+  const mx = (xn) => (1 - xn) * w;
+
+  previewCtx.strokeStyle = handState.palmOpen ? '#ffb020' : '#c8ff3e';
+  previewCtx.lineWidth = 2;
+  const pairs = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],
+                 [0,9],[9,10],[10,11],[11,12],[0,13],[13,14],[14,15],[15,16],
+                 [0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17]];
+  pairs.forEach(([a,b]) => {
+    previewCtx.beginPath();
+    previewCtx.moveTo(mx(lm[a].x), lm[a].y * h);
+    previewCtx.lineTo(mx(lm[b].x), lm[b].y * h);
+    previewCtx.stroke();
+  });
+  previewCtx.fillStyle = '#ff3b1f';
+  previewCtx.beginPath();
+  previewCtx.arc(mx(lm[8].x), lm[8].y * h, 4, 0, Math.PI * 2);
+  previewCtx.fill();
+}
+
+// ---------- Start button ----------
+startBtn.addEventListener('click', async () => {
+  startBtn.disabled = true;
+  startBtn.textContent = 'Requesting camera...';
+  permHint.textContent = '';
+  try {
+    setupPreviewCanvas();
+    await initHandTracking();
+    startCalibration();
+  } catch (err) {
+    console.error(err);
+    startBtn.disabled = false;
+    startBtn.textContent = 'Enable Camera';
+    permHint.textContent = 'Camera access was blocked or unavailable. Check your browser permissions and try again.';
+    setTrackState('lost', 'Camera blocked');
+  }
+});
+
+// =============================================================================
+// P5 GAME SKETCH
+// =============================================================================
+
+const sketch = (p) => {
+  let fruits = [];
+  let particles = [];
+  let trail = [];
+  let score = 0;
+  const MAX_LIVES = 10;
+  let lives = MAX_LIVES;
+  let gameOver = false;
+  let spawnTimer = 0;
+  let spawnInterval = 70;
+  let difficultyTimer = 0;
+  let shakeAmt = 0;
+  let isPaused = false;
+  let pauseSource = null; // 'gesture' | 'manual' | null — keeps the two pause triggers from fighting each other
+  let palmHoldStart = null;
+  const PALM_PAUSE_HOLD_MS = 500; // require a deliberate hold, not an accidental open hand mid-swipe
+  let restartBtnRect = null; // set each time the game-over panel is drawn, read by mousePressed
+
+  // Combo tracking
+  let comboCount = 0;
+  let comboWindowEnd = 0;
+  const COMBO_WINDOW_MS = 720;
+
+  const GRAVITY = 0.32;
+  const FRUIT_TYPES = [
+    { name: 'apple',  color: [220, 50, 50],  inner: [255, 230, 200], r: 38 },
+    { name: 'orange', color: [255, 140, 20], inner: [255, 200, 120], r: 36 },
+    { name: 'lime',   color: [150, 220, 60], inner: [220, 250, 180], r: 32 },
+    { name: 'plum',   color: [130, 60, 160], inner: [230, 200, 240], r: 34 },
+    { name: 'melon',  color: [90, 200, 140], inner: [255, 240, 200], r: 44 }
+  ];
+
+  p.setup = () => {
+    const c = p.createCanvas(gameCanvasW, gameCanvasH);
+    c.parent(document.getElementById('stage'));
+    p.noStroke();
+    updateLivesUI();
+    statusEl.textContent = 'Tip: show an open palm any time to pause.';
+  };
+
+  p.draw = () => {
+    checkPauseGesture();
+
+    p.push();
+    if (shakeAmt > 0.5) {
+      p.translate(p.random(-shakeAmt, shakeAmt), p.random(-shakeAmt, shakeAmt));
+      shakeAmt *= 0.85;
+    }
+    drawBackdrop();
+
+    if (gameOver) {
+      drawGameOverPanel();
+      checkRestartGesture();
+    } else if (isPaused) {
+      // freeze gameplay entirely, but still draw existing fruit/particles
+      // so the scene doesn't jump when resuming
+      drawFruitsStatic();
+    } else {
+      updateSpawning();
+      updateFruits();
+      checkComboExpiry();
+      checkSlices();
+    }
+
+    updateBladeTrail();
+    updateParticles();
+    drawBladeTrail();
+    drawBladeCursor();
+    p.pop();
+  };
+
+  p.mousePressed = () => {
+    if (!gameOver || !restartBtnRect) return;
+    const r = restartBtnRect;
+    if (p.mouseX >= r.x && p.mouseX <= r.x + r.w &&
+        p.mouseY >= r.y && p.mouseY <= r.y + r.h) {
+      resetGame();
+    }
+  };
+
+  p.keyPressed = () => {
+    if (gameOver && (p.key === 'r' || p.key === 'R')) {
+      resetGame();
+    }
+  };
+
+  // ---------- Pause: shared helpers for both gesture and button sources ----------
+  function enterPause(source) {
+    if (isPaused) return;
+    isPaused = true;
+    pauseSource = source;
+    pauseBanner.classList.add('show');
+    if (source === 'gesture') {
+      pauseBannerTitle.textContent = 'PAUSED';
+      pauseBannerText.textContent = 'Open palm detected. Make a fist or lower your hand, then hold it up again to resume, or click Resume.';
+    } else {
+      pauseBannerTitle.textContent = 'PAUSED';
+      pauseBannerText.textContent = 'Click Resume or press the pause button again when you are ready to continue.';
+    }
+    pauseBtn.textContent = '▶';
+    pauseBtn.setAttribute('aria-label', 'Resume');
+  }
+
+  function exitPause() {
+    isPaused = false;
+    pauseSource = null;
+    palmHoldStart = null;
+    pauseBanner.classList.remove('show');
+    pauseBtn.textContent = '❚❚';
+    pauseBtn.setAttribute('aria-label', 'Pause');
+  }
+
+  // ---------- Pause via open palm ----------
+  function checkPauseGesture() {
+    if (gameOver) return;
+    // Manual pauses are only ever cleared by the button/banner, gesture
+    // logic should not auto-resume a pause it didn't trigger.
+    if (isPaused && pauseSource === 'manual') return;
+
+    const now = performance.now();
+    if (handState.active && handState.palmOpen) {
+      if (palmHoldStart === null) palmHoldStart = now;
+      if (now - palmHoldStart > PALM_PAUSE_HOLD_MS && !isPaused) {
+        enterPause('gesture');
+      }
+    } else {
+      palmHoldStart = null;
+      // resume the instant palm closes again (fist or lowered hand),
+      // no separate "confirm" step, since the whole point is fast recovery
+      if (isPaused && pauseSource === 'gesture') {
+        exitPause();
+      }
+    }
+  }
+
+  // ---------- Pause via button click ----------
+  function togglePauseButton() {
+    if (gameOver) return;
+    if (isPaused) {
+      exitPause();
+    } else {
+      enterPause('manual');
+    }
+  }
+  pauseBtn.addEventListener('click', togglePauseButton);
+  resumeBtn.addEventListener('click', () => {
+    if (isPaused) exitPause();
+  });
+
+  let restartHoverStart = null;
+  const RESTART_DWELL_MS = 550; // brief hold-to-confirm, prevents an accidental flick from instantly restarting
+
+  function checkRestartGesture() {
+    if (!handState.active || !restartBtnRect) { restartHoverStart = null; return; }
+    const r = restartBtnRect;
+    const over = handState.x >= r.x && handState.x <= r.x + r.w &&
+                 handState.y >= r.y && handState.y <= r.y + r.h;
+    if (over) {
+      if (restartHoverStart === null) restartHoverStart = performance.now();
+      else if (performance.now() - restartHoverStart > RESTART_DWELL_MS) {
+        restartHoverStart = null;
+        resetGame();
+      }
+    } else {
+      restartHoverStart = null;
+    }
+  }
+
+  function drawBackdrop() {
+    p.background(10, 10, 13);
+    for (let i = 0; i < p.height; i += 4) {
+      const a = p.map(i, 0, p.height, 0, 18);
+      p.stroke(255, 255, 255, a * 0.15);
+      p.line(0, i, p.width, i);
+    }
+    p.noStroke();
+  }
+
+  function updateSpawning() {
+    spawnTimer++;
+    difficultyTimer++;
+    if (difficultyTimer % 600 === 0 && spawnInterval > 32) {
+      spawnInterval -= 4;
+    }
+    if (spawnTimer >= spawnInterval) {
+      spawnTimer = 0;
+      spawnWave();
+    }
+  }
+
+  function spawnWave() {
+    const count = p.random() < 0.18 ? 2 : 1;
+    for (let i = 0; i < count; i++) spawnFruit();
+    if (p.random() < 0.12 && score > 5) spawnBomb();
+  }
+
+  function spawnFruit() {
+    const type = p.random(FRUIT_TYPES);
+    const x = p.random(p.width * 0.15, p.width * 0.85);
+    const vx = p.random(-2.2, 2.2);
+    const vy = launchVelocityFor(p.random(0.62, 0.82));
+    fruits.push({
+      x, y: p.height + 40, vx, vy,
+      r: type.r, type, rot: p.random(p.TWO_PI), rotSpeed: p.random(-0.05, 0.05),
+      sliced: false, isBomb: false
+    });
+  }
+
+  // Returns the initial upward velocity needed so a projectile under GRAVITY
+  // peaks at apexFraction * canvas height above its launch point. Derived
+  // from v^2 = 2*g*h, so apex height is exact regardless of canvas size,
+  // fixing the previous hardcoded velocity that only worked for one fixed
+  // canvas height and otherwise launched fruit too low to be reachable.
+  function launchVelocityFor(apexFraction) {
+    const targetApex = p.height * apexFraction;
+    return -Math.sqrt(2 * GRAVITY * targetApex);
+  }
+
+  function spawnBomb() {
+    const x = p.random(p.width * 0.2, p.width * 0.8);
+    fruits.push({
+      x, y: p.height + 40,
+      vx: p.random(-1.5, 1.5), vy: launchVelocityFor(p.random(0.55, 0.72)),
+      r: 30, rot: 0, rotSpeed: p.random(-0.03,0.03), // slightly smaller hit radius than fruit, see header note
+      sliced: false, isBomb: true
+    });
+  }
+
+  function updateFruits() {
+    for (let i = fruits.length - 1; i >= 0; i--) {
+      const f = fruits[i];
+      f.vy += GRAVITY;
+      f.x += f.vx;
+      f.y += f.vy;
+      f.rot += f.rotSpeed;
+      drawFruit(f);
+
+      if (f.y > p.height + 80) {
+        if (!f.isBomb && !f.sliced) loseLife();
+        fruits.splice(i, 1);
+      }
+    }
+  }
+
+  function drawFruitsStatic() {
+    // render without physics update, used while paused
+    fruits.forEach(drawFruit);
+  }
+
+  function drawFruit(f) {
+    p.push();
+    p.translate(f.x, f.y);
+    p.rotate(f.rot);
+    if (f.isBomb) {
+      p.fill(20, 20, 24);
+      p.circle(0, 0, f.r * 2);
+      p.fill(255, 80, 60);
+      p.ellipse(-f.r*0.3, -f.r*0.3, f.r*0.5, f.r*0.3);
+      p.stroke(255,80,60);
+      p.strokeWeight(3);
+      p.line(0, -f.r, 0, -f.r - 12);
+      p.noStroke();
+    } else {
+      p.fill(f.type.color);
+      p.circle(0, 0, f.r * 2);
+      p.fill(f.type.inner[0], f.type.inner[1], f.type.inner[2], 60);
+      p.circle(0, 0, f.r * 1.1);
+    }
+    p.pop();
+  }
+
+  // ---------- Blade trail + persistent cursor ----------
+  const TRAIL_GRACE_MS = 180; // tolerate brief MediaPipe dropouts without killing the trail
+  function updateBladeTrail() {
+    const recentlyTracked = (performance.now() - handState.lastSeenAt) < TRAIL_GRACE_MS;
+    if (recentlyTracked) {
+      trail.push({ x: handState.x, y: handState.y, life: 18 });
+    }
+    for (let i = trail.length - 1; i >= 0; i--) {
+      trail[i].life--;
+      if (trail[i].life <= 0) trail.splice(i, 1);
+    }
+  }
+
+  function drawBladeTrail() {
+    if (trail.length < 2) return;
+    p.noFill();
+    for (let i = 1; i < trail.length; i++) {
+      const a = trail[i];
+      const b = trail[i-1];
+      const alpha = p.map(a.life, 0, 18, 0, 220);
+      p.stroke(255, 59, 31, alpha);
+      p.strokeWeight(p.map(a.life, 0, 18, 1, 7));
+      p.line(a.x, a.y, b.x, b.y);
+    }
+    p.noStroke();
+  }
+
+  // Always-on fingertip marker. This is the single highest-value addition:
+  // without it, an idle hand renders nothing and the player can't tell the
+  // system is even seeing them.
+  function drawBladeCursor() {
+    const msSinceSeen = performance.now() - handState.lastSeenAt;
+    if (msSinceSeen > TRAIL_GRACE_MS) return; // truly gone, let it disappear
+    const isStale = !handState.active; // within grace window but no fresh detection this frame
+
+    const pulsing = isPaused;
+    p.push();
+    p.translate(handState.x, handState.y);
+
+    const ringCol = pulsing ? [255,176,32] : [255,59,31];
+    let ringAlpha = pulsing ? (180 + 60*Math.sin(p.frameCount*0.15)) : 160;
+    if (isStale) ringAlpha *= 0.5; // subtle dim instead of a hard pop, smooths over brief dropouts
+    p.noFill();
+    p.stroke(ringCol[0], ringCol[1], ringCol[2], ringAlpha);
+    p.strokeWeight(2);
+    p.circle(0, 0, 22);
+
+    p.noStroke();
+    p.fill(ringCol[0], ringCol[1], ringCol[2], isStale ? 140 : 255);
+    p.circle(0, 0, 7);
+    p.pop();
+  }
+
+  // ---------- Slicing + combo ----------
+  function checkSlices() {
+    if (!handState.active || handState.speed < 6) return;
+
+    const x1 = handState.prevX, y1 = handState.prevY;
+    const x2 = handState.x, y2 = handState.y;
+
+    for (let i = fruits.length - 1; i >= 0; i--) {
+      const f = fruits[i];
+      if (f.sliced) continue;
+      if (segmentCircleHit(x1, y1, x2, y2, f.x, f.y, f.r)) {
+        if (f.isBomb) {
+          triggerBombHit();
+          fruits.splice(i, 1);
+        } else {
+          sliceFruit(f, i);
+        }
+      }
+    }
+  }
+
+  function segmentCircleHit(x1,y1,x2,y2,cx,cy,r) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const lenSq = dx*dx + dy*dy;
+    let t = lenSq === 0 ? 0 : ((cx-x1)*dx + (cy-y1)*dy) / lenSq;
+    t = p.constrain(t, 0, 1);
+    const px = x1 + t*dx, py = y1 + t*dy;
+    return dist(px, py, cx, cy) < r + 6;
+  }
+
+  function sliceFruit(f, idx) {
+    f.sliced = true;
+    registerComboHit();
+    const points = 1 * comboMultiplier();
+    score += points;
+    document.getElementById('scoreVal').textContent = score;
+    spawnJuiceParticles(f);
+    fruits.splice(idx, 1);
+  }
+
+  function comboMultiplier() {
+    if (comboCount >= 5) return 3;
+    if (comboCount >= 3) return 2;
+    return 1;
+  }
+
+  function registerComboHit() {
+    const now = performance.now();
+    if (now < comboWindowEnd) {
+      comboCount++;
+    } else {
+      comboCount = 1;
+    }
+    comboWindowEnd = now + COMBO_WINDOW_MS;
+
+    if (comboCount >= 3) showComboCallout(comboCount);
+  }
+
+  function checkComboExpiry() {
+    if (comboCount > 0 && performance.now() > comboWindowEnd) {
+      comboCount = 0;
+    }
+  }
+
+  let comboCalloutTimer = null;
+  function showComboCallout(n) {
+    const label = n >= 5 ? `${n}x COMBO!! +3 EACH` : `${n}x COMBO! +2 EACH`;
+    comboCallout.textContent = label;
+    comboCallout.classList.add('show');
+    clearTimeout(comboCalloutTimer);
+    comboCalloutTimer = setTimeout(() => comboCallout.classList.remove('show'), 550);
+  }
+
+  function spawnJuiceParticles(f) {
+    const col = f.type ? f.type.color : [200,200,200];
+    for (let i = 0; i < 14; i++) {
+      particles.push({
+        x: f.x, y: f.y,
+        vx: p.random(-4,4), vy: p.random(-6,-1),
+        life: 30, col
+      });
+    }
+  }
+
+  function updateParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const pt = particles[i];
+      if (!isPaused) {
+        pt.vy += GRAVITY * 0.6;
+        pt.x += pt.vx;
+        pt.y += pt.vy;
+        pt.life--;
+      }
+      p.fill(pt.col[0], pt.col[1], pt.col[2], p.map(pt.life,0,30,0,255));
+      p.circle(pt.x, pt.y, 7);
+      if (pt.life <= 0) particles.splice(i,1);
+    }
+  }
+
+  function triggerBombHit() {
+    shakeAmt = 18;
+    lives = 0;
+    updateLivesUI();
+    endGame();
+  }
+
+  function loseLife() {
+    lives = Math.max(0, lives - 1);
+    shakeAmt = 8;
+    comboCount = 0;
+    updateLivesUI();
+    if (lives <= 0) endGame();
+  }
+
+  function endGame() { gameOver = true; }
+
+  function drawGameOverPanel() {
+    p.fill(0, 0, 0, 180);
+    p.rect(0, 0, p.width, p.height);
+    p.fill(255);
+    p.textAlign(p.CENTER, p.CENTER);
+    p.textSize(42);
+    p.text('RUN OVER', p.width/2, p.height/2 - 60);
+    p.textSize(20);
+    p.fill(200, 255, 90);
+    p.text('Score: ' + score, p.width/2, p.height/2 - 14);
+
+    // Real clickable restart button, drawn each frame and hit-tested in
+    // p.mousePressed below. Replaces the old "refresh the page" text,
+    // which made no sense once this ran as a native app with no address
+    // bar, and was a clunky reset even in a browser tab.
+    const btnW = 200, btnH = 52;
+    const btnX = p.width/2 - btnW/2;
+    const btnY = p.height/2 + 30;
+    restartBtnRect = { x: btnX, y: btnY, w: btnW, h: btnH };
+
+    const hovering = p.mouseX >= btnX && p.mouseX <= btnX + btnW &&
+                      p.mouseY >= btnY && p.mouseY <= btnY + btnH;
+    p.fill(hovering ? 255 : 255, hovering ? 75 : 59, hovering ? 45 : 31);
+    p.rect(btnX, btnY, btnW, btnH, 6);
+    p.fill(255);
+    p.textSize(15);
+    p.text('PLAY AGAIN', p.width/2, btnY + btnH/2 + 1);
+
+    // Dwell progress ring around the button when the tracked hand is
+    // hovering it, gives the same kind of feedback the calibration screen
+    // uses, so holding your hand here to restart is discoverable rather
+    // than an invisible timer.
+    if (restartHoverStart !== null) {
+      const frac = Math.min(1, (performance.now() - restartHoverStart) / RESTART_DWELL_MS);
+      p.noFill();
+      p.stroke(200, 255, 90);
+      p.strokeWeight(4);
+      p.arc(p.width/2, btnY + btnH/2, btnW + 26, btnH + 26, -p.HALF_PI, -p.HALF_PI + frac * p.TWO_PI);
+      p.noStroke();
+    }
+
+    p.fill(150);
+    p.textSize(11);
+    p.text('or press R, or hold your hand over the button', p.width/2, btnY + btnH + 22);
+  }
+
+  // Resets every piece of mutable run state without reloading the page,
+  // so the game, MediaPipe session, and camera stream all stay alive.
+  function resetGame() {
+    fruits = [];
+    particles = [];
+    trail = [];
+    score = 0;
+    document.getElementById('scoreVal').textContent = '0';
+    lives = MAX_LIVES;
+    updateLivesUI();
+    gameOver = false;
+    spawnTimer = 0;
+    spawnInterval = 70;
+    difficultyTimer = 0;
+    shakeAmt = 0;
+    comboCount = 0;
+    comboWindowEnd = 0;
+    restartBtnRect = null;
+    exitPause();
+  }
+
+  function updateLivesUI() {
+    const el = document.getElementById('lives');
+    el.innerHTML = '';
+    for (let i = 0; i < MAX_LIVES; i++) {
+      const d = document.createElement('div');
+      d.className = 'life-dot' + (i < lives ? '' : ' lost');
+      el.appendChild(d);
+    }
+  }
+};
+
+let p5Instance = null;
+function startGame() {
+  if (p5Instance) return;
+  p5Instance = new p5(sketch);
+}
+</script>
+</body>
+</html>
